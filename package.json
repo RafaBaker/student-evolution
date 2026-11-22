@@ -2,6 +2,13 @@
   "name": "student-evolution",
   "version": "1.0.0",
   "type": "module",
+  "scripts": {
+    "build": "hardhat build",
+    "deploy:ram": "hardhat run scripts/deploy-ram.ts",
+    "deploy:ram:local": "hardhat run scripts/deploy-ram.ts --network localhost",
+    "deploy:ram:sepolia": "hardhat run scripts/deploy-ram.ts --network sepolia",
+    "liquidity:deposit": "hardhat run scripts/deposit-liquidity.ts"
+  },
   "devDependencies": {
     "@nomicfoundation/hardhat-ignition": "^3.1.10",
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
@@ -10,6 +17,6 @@
     "forge-std": "github:foundry-rs/forge-std#v1.17.0",
     "hardhat": "^3.22.0",
     "typescript": "~6.0.3",
-    "viem": "^2.57.19"
+    "viem": "^2.58.4"
   }
 }
