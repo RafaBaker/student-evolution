@@ -6,8 +6,22 @@ const ARENA_X = BORDER_THICKNESS;
 const ARENA_Y = BORDER_THICKNESS;
 const ARENA_SIZE = CANVAS_SIZE - BORDER_THICKNESS * 2;
 
-const PLAYER_SIZE = 40;
+const PLAYER_SPRITE_KEY = "player";
+const PLAYER_SPRITESHEET_PATH = "./assets/player-spritesheet-4dir.png";
+const PLAYER_FRAME_WIDTH = 96;
+const PLAYER_FRAME_HEIGHT = 168;
+const PLAYER_SCALE = 0.5;
+const PLAYER_BODY_WIDTH = 72;
+const PLAYER_BODY_HEIGHT = 160;
 const PLAYER_SPEED = 280;
+const PLAYER_WALK_FPS = 6;
+
+const PLAYER_DIRECTIONS = {
+  down: { walk: "player-walk-down", start: 0, end: 1, idleFrame: 0 },
+  up: { walk: "player-walk-up", start: 2, end: 3, idleFrame: 2 },
+  left: { walk: "player-walk-left", start: 4, end: 5, idleFrame: 4 },
+  right: { walk: "player-walk-right", start: 6, end: 7, idleFrame: 6 },
+};
 
 const COLORS = {
   background: 0x0b1220,
@@ -15,23 +29,34 @@ const COLORS = {
   border: 0x334155,
   borderInnerLine: 0x64748b,
   borderHit: 0x38bdf8,
-  playerFill: 0x22d3ee,
-  playerStroke: 0xe0f2fe,
 };
 
 class SquareArenaScene extends Phaser.Scene {
   constructor() {
     super("SquareArenaScene");
     this.player = null;
+    this.facing = "down";
     this.cursors = null;
     this.wasd = null;
     this.walls = {};
     this.wallTimers = {};
   }
 
+  preload() {
+    this.load.spritesheet(
+      PLAYER_SPRITE_KEY,
+      PLAYER_SPRITESHEET_PATH,
+      {
+        frameWidth: PLAYER_FRAME_WIDTH,
+        frameHeight: PLAYER_FRAME_HEIGHT,
+      }
+    );
+  }
+
   create() {
     this.drawArenaBackground();
     this.createSquareBorder();
+    this.createPlayerAnimations();
     this.createPlayer();
     this.configureWorldBounds();
     this.configureControls();
@@ -109,18 +134,34 @@ class SquareArenaScene extends Phaser.Scene {
     );
   }
 
-  createPlayer() {
-    const gfx = this.make.graphics({ x: 0, y: 0, add: false });
-    gfx.fillStyle(COLORS.playerFill, 1);
-    gfx.fillRect(0, 0, PLAYER_SIZE, PLAYER_SIZE);
-    gfx.lineStyle(2, COLORS.playerStroke, 1);
-    gfx.strokeRect(1, 1, PLAYER_SIZE - 2, PLAYER_SIZE - 2);
-    gfx.generateTexture("player-square", PLAYER_SIZE, PLAYER_SIZE);
-    gfx.destroy();
+  createPlayerAnimations() {
+    for (const { walk, start, end } of Object.values(PLAYER_DIRECTIONS)) {
+      if (!this.anims.exists(walk)) {
+        this.anims.create({
+          key: walk,
+          frames: this.anims.generateFrameNumbers(PLAYER_SPRITE_KEY, {
+            start,
+            end,
+          }),
+          frameRate: PLAYER_WALK_FPS,
+          repeat: -1,
+        });
+      }
+    }
+  }
 
+  createPlayer() {
     this.player = this.physics.add
-      .image(CANVAS_SIZE / 2, CANVAS_SIZE / 2, "player-square")
+      .sprite(
+        CANVAS_SIZE / 2,
+        CANVAS_SIZE / 2,
+        PLAYER_SPRITE_KEY,
+        PLAYER_DIRECTIONS[this.facing].idleFrame
+      )
+      .setScale(PLAYER_SCALE)
       .setDepth(4);
+
+    this.player.body.setSize(PLAYER_BODY_WIDTH, PLAYER_BODY_HEIGHT, true);
   }
 
   configureWorldBounds() {
@@ -187,13 +228,26 @@ class SquareArenaScene extends Phaser.Scene {
     }
 
     if (dx !== 0 || dy !== 0) {
+      if (dx < 0) {
+        this.facing = "left";
+      } else if (dx > 0) {
+        this.facing = "right";
+      } else if (dy < 0) {
+        this.facing = "up";
+      } else if (dy > 0) {
+        this.facing = "down";
+      }
+
       const length = Math.hypot(dx, dy);
       this.player.setVelocity(
         (dx / length) * PLAYER_SPEED,
         (dy / length) * PLAYER_SPEED
       );
+      this.player.anims.play(PLAYER_DIRECTIONS[this.facing].walk, true);
     } else {
       this.player.setVelocity(0, 0);
+      this.player.anims.stop();
+      this.player.setFrame(PLAYER_DIRECTIONS[this.facing].idleFrame);
     }
   }
 }
