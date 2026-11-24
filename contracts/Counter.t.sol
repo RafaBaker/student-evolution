@@ -26,4 +26,11 @@ contract CounterTest is Test {
     vm.expectRevert();
     counter.incBy(0);
   }
+
+  function test_IncEmitsIncrementEvent() public {
+    vm.expectEmit();
+    emit Counter.Increment(1);
+
+    counter.inc();
+  }
 }
