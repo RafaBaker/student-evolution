@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "hardhat build",
+    "game": "node scripts/serve-game.mjs",
     "deploy:ram": "hardhat run scripts/deploy-ram.ts",
     "deploy:ram:local": "hardhat run scripts/deploy-ram.ts --network localhost",
     "deploy:ram:sepolia": "hardhat run scripts/deploy-ram.ts --network sepolia",
