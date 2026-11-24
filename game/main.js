@@ -11,17 +11,23 @@ const PLAYER_SPRITESHEET_PATH = "./assets/player-spritesheet-4dir.png";
 const PLAYER_FRAME_WIDTH = 96;
 const PLAYER_FRAME_HEIGHT = 168;
 const PLAYER_SCALE = 0.5;
-const PLAYER_BODY_WIDTH = 72;
-const PLAYER_BODY_HEIGHT = 160;
-const PLAYER_SPEED = 280;
-const PLAYER_WALK_FPS = 6;
+const PLAYER_IDLE_FRAME = 0;
 
-const PLAYER_DIRECTIONS = {
-  down: { walk: "player-walk-down", start: 0, end: 1, idleFrame: 0 },
-  up: { walk: "player-walk-up", start: 2, end: 3, idleFrame: 2 },
-  left: { walk: "player-walk-left", start: 4, end: 5, idleFrame: 4 },
-  right: { walk: "player-walk-right", start: 6, end: 7, idleFrame: 6 },
-};
+const STUDENT_COST = 1;
+const STUDENT_EMISSION_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos
+const EVOLVED_EMISSION_INTERVAL_MS = 1 * 60 * 1000; // 1 minuto
+
+const EVOLVED_WIDTH = 56;
+const EVOLVED_HEIGHT = 52;
+const MERGE_DISTANCE = 56;
+const MIN_SPAWN_SPACING = 76;
+
+const TOKEN_SIZE = 24;
+const TOKEN_VALUE = 1;
+const TOKEN_SYMBOL = "RAM";
+const TOKEN_SPAWN_MIN_DISTANCE = 48;
+const TOKEN_SPAWN_MAX_DISTANCE = 76;
+const TOKEN_ARENA_PADDING = 8;
 
 const COLORS = {
   background: 0x0b1220,
@@ -29,37 +35,78 @@ const COLORS = {
   border: 0x334155,
   borderInnerLine: 0x64748b,
   borderHit: 0x38bdf8,
+  dragTint: 0xe0f2fe,
+  mergeHighlightTint: 0xfca5a5,
+  evolvedFill: 0xef4444,
+  evolvedDragFill: 0xf87171,
+  evolvedStroke: 0xfecaca,
+  tokenFill: 0xfacc15,
+  tokenHover: 0xfde047,
+  tokenStroke: 0xfef9c3,
 };
+
+function formatCountdown(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 
 class SquareArenaScene extends Phaser.Scene {
   constructor() {
     super("SquareArenaScene");
-    this.player = null;
-    this.facing = "down";
-    this.cursors = null;
-    this.wasd = null;
+    this.characters = [];
+    this.tokens = new Set();
     this.walls = {};
     this.wallTimers = {};
+    this.mergeTarget = null;
+    this.lastCountdownText = "";
+    this.hud = {};
+    this.wallet = {
+      balance: 0,
+      symbol: TOKEN_SYMBOL,
+    };
   }
 
   preload() {
-    this.load.spritesheet(
-      PLAYER_SPRITE_KEY,
-      PLAYER_SPRITESHEET_PATH,
-      {
-        frameWidth: PLAYER_FRAME_WIDTH,
-        frameHeight: PLAYER_FRAME_HEIGHT,
-      }
-    );
+    this.load.spritesheet(PLAYER_SPRITE_KEY, PLAYER_SPRITESHEET_PATH, {
+      frameWidth: PLAYER_FRAME_WIDTH,
+      frameHeight: PLAYER_FRAME_HEIGHT,
+    });
   }
 
   create() {
+    this.input.topOnly = true;
+
+    this.bindHudElements();
+    this.bindShopEvents();
     this.drawArenaBackground();
     this.createSquareBorder();
-    this.createPlayerAnimations();
-    this.createPlayer();
-    this.configureWorldBounds();
-    this.configureControls();
+    this.createStudent(CANVAS_SIZE / 2, CANVAS_SIZE / 2, false);
+    this.configureDragControls();
+    this.updateHud();
+  }
+
+  bindHudElements() {
+    this.hud = {
+      walletBalance: document.getElementById("wallet-balance"),
+      tokenCountdown: document.getElementById("token-countdown"),
+      arenaTokens: document.getElementById("arena-tokens"),
+      studentCount: document.getElementById("student-count"),
+      evolvedCount: document.getElementById("evolved-count"),
+      buyStudentBtn: document.getElementById("buy-student-btn"),
+      shopStatus: document.getElementById("shop-status"),
+    };
+  }
+
+  bindShopEvents() {
+    if (!this.hud.buyStudentBtn) {
+      return;
+    }
+
+    this.hud.buyStudentBtn.addEventListener("click", () => {
+      this.buyStudent();
+    });
   }
 
   drawArenaBackground() {
@@ -134,51 +181,484 @@ class SquareArenaScene extends Phaser.Scene {
     );
   }
 
-  createPlayerAnimations() {
-    for (const { walk, start, end } of Object.values(PLAYER_DIRECTIONS)) {
-      if (!this.anims.exists(walk)) {
-        this.anims.create({
-          key: walk,
-          frames: this.anims.generateFrameNumbers(PLAYER_SPRITE_KEY, {
-            start,
-            end,
-          }),
-          frameRate: PLAYER_WALK_FPS,
-          repeat: -1,
-        });
+  getCharacterBounds(halfWidth, halfHeight) {
+    return {
+      minX: ARENA_X + halfWidth,
+      maxX: ARENA_X + ARENA_SIZE - halfWidth,
+      minY: ARENA_Y + halfHeight,
+      maxY: ARENA_Y + ARENA_SIZE - halfHeight,
+    };
+  }
+
+  attachCharacterBehavior(character, config) {
+    const { kind, baseScale, halfWidth, halfHeight, emissionIntervalMs } = config;
+
+    character.setData("type", "character");
+    character.setData("characterKind", kind);
+    character.setData("baseScale", baseScale);
+    character.setData("halfWidth", halfWidth);
+    character.setData("halfHeight", halfHeight);
+    character.setData("emissionIntervalMs", emissionIntervalMs);
+
+    character.setInteractive({
+      draggable: true,
+      useHandCursor: true,
+    });
+
+    const emissionTimer = this.time.addEvent({
+      delay: emissionIntervalMs,
+      loop: true,
+      callback: () => {
+        if (character.active) {
+          this.spawnTokenNear(character);
+        }
+      },
+    });
+    character.setData("emissionTimer", emissionTimer);
+
+    this.characters.push(character);
+    return character;
+  }
+
+  createStudent(x, y, animate = true) {
+    const halfWidth = (PLAYER_FRAME_WIDTH * PLAYER_SCALE) / 2;
+    const halfHeight = (PLAYER_FRAME_HEIGHT * PLAYER_SCALE) / 2;
+    const bounds = this.getCharacterBounds(halfWidth, halfHeight);
+    const clampedX = Phaser.Math.Clamp(x, bounds.minX, bounds.maxX);
+    const clampedY = Phaser.Math.Clamp(y, bounds.minY, bounds.maxY);
+
+    const student = this.add
+      .sprite(clampedX, clampedY, PLAYER_SPRITE_KEY, PLAYER_IDLE_FRAME)
+      .setScale(animate ? 0.1 : PLAYER_SCALE)
+      .setDepth(4);
+
+    this.attachCharacterBehavior(student, {
+      kind: "student",
+      baseScale: PLAYER_SCALE,
+      halfWidth,
+      halfHeight,
+      emissionIntervalMs: STUDENT_EMISSION_INTERVAL_MS,
+    });
+
+    if (animate) {
+      this.tweens.add({
+        targets: student,
+        scale: PLAYER_SCALE,
+        duration: 240,
+        ease: "Back.easeOut",
+      });
+    }
+
+    return student;
+  }
+
+  createEvolvedCharacter(x, y, animate = true) {
+    const halfWidth = EVOLVED_WIDTH / 2;
+    const halfHeight = EVOLVED_HEIGHT / 2;
+    const bounds = this.getCharacterBounds(halfWidth, halfHeight);
+    const clampedX = Phaser.Math.Clamp(x, bounds.minX, bounds.maxX);
+    const clampedY = Phaser.Math.Clamp(y, bounds.minY, bounds.maxY);
+
+    const triangle = this.add
+      .triangle(
+        clampedX,
+        clampedY,
+        0,
+        EVOLVED_HEIGHT,
+        EVOLVED_WIDTH / 2,
+        0,
+        EVOLVED_WIDTH,
+        EVOLVED_HEIGHT,
+        COLORS.evolvedFill
+      )
+      .setStrokeStyle(2, COLORS.evolvedStroke)
+      .setScale(animate ? 0.2 : 1)
+      .setDepth(4);
+
+    this.attachCharacterBehavior(triangle, {
+      kind: "evolved",
+      baseScale: 1,
+      halfWidth,
+      halfHeight,
+      emissionIntervalMs: EVOLVED_EMISSION_INTERVAL_MS,
+    });
+
+    if (animate) {
+      this.tweens.add({
+        targets: triangle,
+        scale: 1,
+        duration: 280,
+        ease: "Back.easeOut",
+      });
+    }
+
+    return triangle;
+  }
+
+  destroyCharacter(character) {
+    const emissionTimer = character.getData("emissionTimer");
+    if (emissionTimer) {
+      emissionTimer.remove(false);
+    }
+
+    this.tweens.killTweensOf(character);
+    this.characters = this.characters.filter((item) => item !== character);
+    character.destroy();
+  }
+
+  findSpawnPosition(halfWidth, halfHeight) {
+    const padding = 12;
+    const bounds = this.getCharacterBounds(halfWidth + padding, halfHeight + padding);
+
+    let bestPos = { x: CANVAS_SIZE / 2, y: CANVAS_SIZE / 2 };
+    let bestMinDist = -1;
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const candidateX = Phaser.Math.FloatBetween(bounds.minX, bounds.maxX);
+      const candidateY = Phaser.Math.FloatBetween(bounds.minY, bounds.maxY);
+
+      if (this.characters.length === 0) {
+        return { x: candidateX, y: candidateY };
       }
+
+      let minDist = Infinity;
+      for (const character of this.characters) {
+        const dist = Phaser.Math.Distance.Between(
+          candidateX,
+          candidateY,
+          character.x,
+          character.y
+        );
+        if (dist < minDist) {
+          minDist = dist;
+        }
+      }
+
+      if (minDist >= MIN_SPAWN_SPACING) {
+        return { x: candidateX, y: candidateY };
+      }
+
+      if (minDist > bestMinDist) {
+        bestMinDist = minDist;
+        bestPos = { x: candidateX, y: candidateY };
+      }
+    }
+
+    return bestPos;
+  }
+
+  buyStudent() {
+    if (this.wallet.balance < STUDENT_COST) {
+      this.setShopStatus("Saldo insuficiente. Colete 1 RAM para comprar.");
+      return;
+    }
+
+    this.wallet.balance -= STUDENT_COST;
+
+    const halfWidth = (PLAYER_FRAME_WIDTH * PLAYER_SCALE) / 2;
+    const halfHeight = (PLAYER_FRAME_HEIGHT * PLAYER_SCALE) / 2;
+    const pos = this.findSpawnPosition(halfWidth, halfHeight);
+
+    const student = this.createStudent(pos.x, pos.y, true);
+    this.showFloatingText(student.x, student.y - 44, "Novo Estudante!", "#38bdf8");
+    this.setShopStatus("Estudante comprado por 1 RAM!");
+    this.updateHud();
+  }
+
+  setShopStatus(message) {
+    if (!this.hud.shopStatus) {
+      return;
+    }
+    this.hud.shopStatus.textContent = message;
+  }
+
+  setCharacterHighlight(character, state) {
+    if (!character || !character.active) {
+      return;
+    }
+
+    const baseScale = character.getData("baseScale") ?? 1;
+    const kind = character.getData("characterKind");
+
+    if (state === "drag") {
+      character.setScale(baseScale * 1.05);
+      if (kind === "evolved") {
+        character.setFillStyle(COLORS.evolvedDragFill);
+      } else if (typeof character.setTint === "function") {
+        character.setTint(COLORS.dragTint);
+      }
+      return;
+    }
+
+    if (state === "mergeTarget") {
+      character.setScale(baseScale * 1.08);
+      if (typeof character.setTint === "function") {
+        character.setTint(COLORS.mergeHighlightTint);
+      }
+      return;
+    }
+
+    character.setScale(baseScale);
+    if (kind === "evolved") {
+      character.setFillStyle(COLORS.evolvedFill);
+    } else if (typeof character.clearTint === "function") {
+      character.clearTint();
     }
   }
 
-  createPlayer() {
-    this.player = this.physics.add
-      .sprite(
-        CANVAS_SIZE / 2,
-        CANVAS_SIZE / 2,
-        PLAYER_SPRITE_KEY,
-        PLAYER_DIRECTIONS[this.facing].idleFrame
-      )
-      .setScale(PLAYER_SCALE)
-      .setDepth(4);
+  findMergeCandidate(draggedStudent) {
+    if (draggedStudent.getData("characterKind") !== "student") {
+      return null;
+    }
 
-    this.player.body.setSize(PLAYER_BODY_WIDTH, PLAYER_BODY_HEIGHT, true);
+    let closest = null;
+    let closestDistance = MERGE_DISTANCE;
+
+    for (const candidate of this.characters) {
+      if (
+        candidate === draggedStudent ||
+        !candidate.active ||
+        candidate.getData("characterKind") !== "student"
+      ) {
+        continue;
+      }
+
+      const distance = Phaser.Math.Distance.Between(
+        draggedStudent.x,
+        draggedStudent.y,
+        candidate.x,
+        candidate.y
+      );
+
+      if (distance <= closestDistance) {
+        closest = candidate;
+        closestDistance = distance;
+      }
+    }
+
+    return closest;
   }
 
-  configureWorldBounds() {
-    // Define os limites físicos exatamente na parte interna da borda quadrada
-    this.physics.world.setBounds(ARENA_X, ARENA_Y, ARENA_SIZE, ARENA_SIZE);
+  updateMergeTarget(draggedCharacter) {
+    const nextTarget = this.findMergeCandidate(draggedCharacter);
+    if (nextTarget === this.mergeTarget) {
+      return;
+    }
 
-    // Impede o jogador de atravessar qualquer lado da borda
-    this.player.setCollideWorldBounds(true, 0, 0, true);
+    if (this.mergeTarget) {
+      this.setCharacterHighlight(this.mergeTarget, "idle");
+    }
 
-    this.physics.world.on("worldbounds", (body, up, down, left, right) => {
-      if (body.gameObject !== this.player) {
+    this.mergeTarget = nextTarget;
+
+    if (this.mergeTarget) {
+      this.setCharacterHighlight(this.mergeTarget, "mergeTarget");
+    }
+  }
+
+  mergeStudents(studentA, studentB) {
+    const mergeX = studentB.x;
+    const mergeY = studentB.y;
+
+    this.destroyCharacter(studentA);
+    this.destroyCharacter(studentB);
+
+    const evolved = this.createEvolvedCharacter(mergeX, mergeY, true);
+    this.showFloatingText(evolved.x, evolved.y - 36, "Evoluiu! 1 RAM/min", "#f87171");
+    this.setShopStatus("Dois estudantes evoluíram para um Triângulo Vermelho!");
+    this.updateHud();
+  }
+
+  configureDragControls() {
+    this.input.on("dragstart", (_pointer, gameObject) => {
+      if (gameObject.getData("type") !== "character") {
         return;
       }
-      if (up) this.flashWall("up");
-      if (down) this.flashWall("down");
-      if (left) this.flashWall("left");
-      if (right) this.flashWall("right");
+      this.tweens.killTweensOf(gameObject);
+      gameObject.setDepth(6);
+      this.setCharacterHighlight(gameObject, "drag");
+    });
+
+    this.input.on("drag", (_pointer, gameObject, dragX, dragY) => {
+      if (gameObject.getData("type") !== "character") {
+        return;
+      }
+
+      const halfWidth = gameObject.getData("halfWidth");
+      const halfHeight = gameObject.getData("halfHeight");
+      const { minX, maxX, minY, maxY } = this.getCharacterBounds(halfWidth, halfHeight);
+
+      const clampedX = Phaser.Math.Clamp(dragX, minX, maxX);
+      const clampedY = Phaser.Math.Clamp(dragY, minY, maxY);
+
+      if (dragX < minX) this.flashWall("left");
+      if (dragX > maxX) this.flashWall("right");
+      if (dragY < minY) this.flashWall("up");
+      if (dragY > maxY) this.flashWall("down");
+
+      gameObject.setPosition(clampedX, clampedY);
+      this.updateMergeTarget(gameObject);
+    });
+
+    this.input.on("dragend", (_pointer, gameObject) => {
+      if (gameObject.getData("type") !== "character") {
+        return;
+      }
+
+      const target = this.mergeTarget;
+      this.mergeTarget = null;
+
+      if (target) {
+        this.setCharacterHighlight(target, "idle");
+      }
+
+      gameObject.setDepth(4);
+      this.setCharacterHighlight(gameObject, "idle");
+
+      if (
+        target &&
+        target.active &&
+        gameObject.active &&
+        gameObject.getData("characterKind") === "student" &&
+        target.getData("characterKind") === "student"
+      ) {
+        this.mergeStudents(gameObject, target);
+      }
+    });
+  }
+
+  spawnTokenNear(character) {
+    const halfToken = TOKEN_SIZE / 2;
+    const minX = ARENA_X + halfToken + TOKEN_ARENA_PADDING;
+    const maxX = ARENA_X + ARENA_SIZE - halfToken - TOKEN_ARENA_PADDING;
+    const minY = ARENA_Y + halfToken + TOKEN_ARENA_PADDING;
+    const maxY = ARENA_Y + ARENA_SIZE - halfToken - TOKEN_ARENA_PADDING;
+
+    const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+    const distance = Phaser.Math.FloatBetween(
+      TOKEN_SPAWN_MIN_DISTANCE,
+      TOKEN_SPAWN_MAX_DISTANCE
+    );
+
+    const targetX = Phaser.Math.Clamp(
+      character.x + Math.cos(angle) * distance,
+      minX,
+      maxX
+    );
+    const targetY = Phaser.Math.Clamp(
+      character.y + Math.sin(angle) * distance,
+      minY,
+      maxY
+    );
+
+    const token = this.add
+      .rectangle(
+        character.x,
+        character.y,
+        TOKEN_SIZE,
+        TOKEN_SIZE,
+        COLORS.tokenFill
+      )
+      .setStrokeStyle(2, COLORS.tokenStroke)
+      .setDepth(10)
+      .setScale(0.2);
+
+    token.setData("type", "token");
+    token.setInteractive({ useHandCursor: true });
+
+    this.tokens.add(token);
+    this.updateHud();
+
+    this.tweens.add({
+      targets: token,
+      x: targetX,
+      y: targetY,
+      scale: 1,
+      duration: 280,
+      ease: "Back.easeOut",
+      onComplete: () => {
+        if (!this.tokens.has(token)) {
+          return;
+        }
+        this.tweens.add({
+          targets: token,
+          scale: 1.08,
+          duration: 700,
+          yoyo: true,
+          repeat: -1,
+          ease: "Sine.easeInOut",
+        });
+      },
+    });
+
+    token.on("pointerover", () => {
+      if (!this.tokens.has(token)) {
+        return;
+      }
+      token.setFillStyle(COLORS.tokenHover);
+    });
+
+    token.on("pointerout", () => {
+      if (!this.tokens.has(token)) {
+        return;
+      }
+      token.setFillStyle(COLORS.tokenFill);
+    });
+
+    token.on("pointerdown", () => {
+      this.collectToken(token);
+    });
+  }
+
+  collectToken(token) {
+    if (!this.tokens.has(token)) {
+      return;
+    }
+
+    this.tokens.delete(token);
+    token.disableInteractive();
+    this.tweens.killTweensOf(token);
+
+    this.wallet.balance += TOKEN_VALUE;
+    this.updateHud();
+
+    this.showFloatingText(
+      token.x,
+      token.y - 10,
+      `+${TOKEN_VALUE} ${this.wallet.symbol}`,
+      "#fde047"
+    );
+
+    this.tweens.add({
+      targets: token,
+      scale: 1.4,
+      alpha: 0,
+      duration: 160,
+      ease: "Quad.easeOut",
+      onComplete: () => token.destroy(),
+    });
+  }
+
+  showFloatingText(x, y, text, color) {
+    const feedback = this.add
+      .text(x, y, text, {
+        fontFamily: "system-ui, -apple-system, sans-serif",
+        fontSize: "14px",
+        fontStyle: "bold",
+        color,
+        stroke: "#0f172a",
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5)
+      .setDepth(20);
+
+    this.tweens.add({
+      targets: feedback,
+      y: feedback.y - 28,
+      alpha: 0,
+      duration: 700,
+      ease: "Cubic.easeOut",
+      onComplete: () => feedback.destroy(),
     });
   }
 
@@ -200,55 +680,67 @@ class SquareArenaScene extends Phaser.Scene {
     });
   }
 
-  configureControls() {
-    this.cursors = this.input.keyboard.createCursorKeys();
-    this.wasd = this.input.keyboard.addKeys({
-      up: Phaser.Input.Keyboard.KeyCodes.W,
-      down: Phaser.Input.Keyboard.KeyCodes.S,
-      left: Phaser.Input.Keyboard.KeyCodes.A,
-      right: Phaser.Input.Keyboard.KeyCodes.D,
-    });
+  getSoonestEmissionRemaining() {
+    let soonest = Infinity;
+
+    for (const character of this.characters) {
+      const timer = character.getData("emissionTimer");
+      if (!timer) {
+        continue;
+      }
+      const remaining = timer.getRemaining();
+      if (remaining < soonest) {
+        soonest = remaining;
+      }
+    }
+
+    return soonest;
+  }
+
+  updateHud() {
+    if (this.hud.walletBalance) {
+      this.hud.walletBalance.textContent = `${this.wallet.balance} ${this.wallet.symbol}`;
+    }
+    if (this.hud.arenaTokens) {
+      this.hud.arenaTokens.textContent = String(this.tokens.size);
+    }
+
+    let students = 0;
+    let evolved = 0;
+    for (const character of this.characters) {
+      const kind = character.getData("characterKind");
+      if (kind === "student") students += 1;
+      if (kind === "evolved") evolved += 1;
+    }
+
+    if (this.hud.studentCount) {
+      this.hud.studentCount.textContent = String(students);
+    }
+    if (this.hud.evolvedCount) {
+      this.hud.evolvedCount.textContent = String(evolved);
+    }
+    if (this.hud.buyStudentBtn) {
+      this.hud.buyStudentBtn.disabled = this.wallet.balance < STUDENT_COST;
+    }
+
+    this.updateCountdownHud();
+  }
+
+  updateCountdownHud() {
+    if (!this.hud.tokenCountdown) {
+      return;
+    }
+
+    const soonest = this.getSoonestEmissionRemaining();
+    const formatted = Number.isFinite(soonest) ? formatCountdown(soonest) : "--:--";
+    if (formatted !== this.lastCountdownText) {
+      this.lastCountdownText = formatted;
+      this.hud.tokenCountdown.textContent = formatted;
+    }
   }
 
   update() {
-    let dx = 0;
-    let dy = 0;
-
-    if (this.cursors.left.isDown || this.wasd.left.isDown) {
-      dx -= 1;
-    }
-    if (this.cursors.right.isDown || this.wasd.right.isDown) {
-      dx += 1;
-    }
-    if (this.cursors.up.isDown || this.wasd.up.isDown) {
-      dy -= 1;
-    }
-    if (this.cursors.down.isDown || this.wasd.down.isDown) {
-      dy += 1;
-    }
-
-    if (dx !== 0 || dy !== 0) {
-      if (dx < 0) {
-        this.facing = "left";
-      } else if (dx > 0) {
-        this.facing = "right";
-      } else if (dy < 0) {
-        this.facing = "up";
-      } else if (dy > 0) {
-        this.facing = "down";
-      }
-
-      const length = Math.hypot(dx, dy);
-      this.player.setVelocity(
-        (dx / length) * PLAYER_SPEED,
-        (dy / length) * PLAYER_SPEED
-      );
-      this.player.anims.play(PLAYER_DIRECTIONS[this.facing].walk, true);
-    } else {
-      this.player.setVelocity(0, 0);
-      this.player.anims.stop();
-      this.player.setFrame(PLAYER_DIRECTIONS[this.facing].idleFrame);
-    }
+    this.updateCountdownHud();
   }
 }
 
@@ -258,13 +750,6 @@ const config = {
   height: CANVAS_SIZE,
   parent: "game-container",
   backgroundColor: "#0b1220",
-  physics: {
-    default: "arcade",
-    arcade: {
-      gravity: { x: 0, y: 0 },
-      debug: false,
-    },
-  },
   scene: [SquareArenaScene],
 };
 
