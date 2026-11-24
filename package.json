@@ -18,5 +18,8 @@
     "hardhat": "^3.22.0",
     "typescript": "~6.0.3",
     "viem": "^2.58.4"
+  },
+  "dependencies": {
+    "phaser": "^4.2.1"
   }
 }

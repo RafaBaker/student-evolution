@@ -13,6 +13,7 @@ contract RAMExchange{
     uint256 public rateWei = 1000;
 
     event LiquidezDepositada(address indexed remetente, uint256 valor);
+    event ExchangeRealizado(address indexed usuario, uint256 quantidadeRam, uint256 valorEth);
 
     modifier verificaAcessoAdmin() {
         require(msg.sender == admin, "voce nao pode chamar esse metodo");
@@ -54,6 +55,8 @@ contract RAMExchange{
 
         (bool sent, ) = payable(msg.sender).call{value: ethAmount}("");
         require(sent, "Falha ao enviar ETH para o usuario");
+
+        emit ExchangeRealizado(msg.sender, qtd, ethAmount);
     }
 
 }
